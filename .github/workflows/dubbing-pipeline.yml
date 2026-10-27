@@ -1,0 +1,127 @@
+name: Full Episode AI Arabic Dubbing (CPU Matrix)
+
+on:
+  workflow_dispatch:
+    inputs:
+      youtube_url:
+        description: 'رابط الحلقة على يوتيوب أو Google Drive (ساعتين أو أكثر)'
+        required: true
+        type: string
+      chunk_seconds:
+        description: 'مدة الدفعة الواحدة بالثواني (الافتراضي 600 = 10 دقائق)'
+        required: false
+        default: '600'
+      bg_music_volume:
+        description: 'مستوى صوت الموسيقى والمؤثرات الخلفية (الافتراضي 0.85)'
+        required: false
+        default: '0.85'
+
+jobs:
+  # المرحلة 1: تحميل الحلقة وتقسيمها إلى دفعات صغيرة بدون إعادة ترميز
+  split_episode:
+    runs-on: ubuntu-latest
+    outputs:
+      chunks_list: ${{ steps.splitter.outputs.chunks }}
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Install FFmpeg
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+          cache: 'pip'
+
+      - name: Install Downloader
+        run: pip install yt-dlp gdown
+
+      - name: Download & Split Video into Chunks
+        id: splitter
+        run: |
+          python scripts/1_split_episode.py \
+            --url "${{ github.event.inputs.youtube_url }}" \
+            --chunk_size ${{ github.event.inputs.chunk_seconds }}
+
+      - name: Upload Raw Chunks Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: raw-video-chunks
+          path: workspace/chunks/
+          retention-days: 1
+
+  # المرحلة 2: معالجة جميع الدفعات بالتوازي (فصل الموسيقى + دبلجة المشاعر + مزامنة الشفاه)
+  process_chunks_matrix:
+    needs: split_episode
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      max-parallel: 15
+      matrix:
+        chunk_id: ${{ fromJson(needs.split_episode.outputs.chunks_list) }}
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Install System Audio/Video Libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg libsndfile1 libgl1
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+          cache: 'pip'
+
+      - name: Install CPU AI Dependencies
+        run: pip install -r requirements.txt
+
+      - name: Download Specific Chunk
+        uses: actions/download-artifact@v4
+        with:
+          name: raw-video-chunks
+          path: workspace/chunks/
+
+      - name: Run Full Dubbing & SFX Separation on Chunk ${{ matrix.chunk_id }}
+        run: |
+          python scripts/2_process_chunk.py \
+            --chunk_id "${{ matrix.chunk_id }}" \
+            --bg_vol ${{ github.event.inputs.bg_music_volume }}
+
+      - name: Upload Dubbed Chunk ${{ matrix.chunk_id }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: dubbed-chunk-${{ matrix.chunk_id }}
+          path: workspace/output/dubbed_${{ matrix.chunk_id }}.mp4
+          retention-days: 1
+
+  # المرحلة 3: دمج كافة الدفعات في حلقة كاملة عالية الجودة
+  merge_final_episode:
+    needs: process_chunks_matrix
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Install FFmpeg
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+
+      - name: Download All Processed Chunks
+        uses: actions/download-artifact@v4
+        with:
+          pattern: dubbed-chunk-*
+          path: workspace/dubbed_parts/
+          merge-multiple: true
+
+      - name: Merge Episode Parts
+        run: python scripts/3_merge_episode.py
+
+      - name: Upload Final Dubbed Episode
+        uses: actions/upload-artifact@v4
+        with:
+          name: Final-Arabic-Dubbed-Episode
+          path: workspace/Final_Episode_Arabic.mp4
+          retention-days: 7
