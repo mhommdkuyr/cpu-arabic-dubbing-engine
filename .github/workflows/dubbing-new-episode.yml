@@ -1,0 +1,68 @@
+name: Dubbing New Episode Pipeline
+
+on:
+  workflow_dispatch:
+    inputs:
+      video_id:
+        description: 'Google Drive File ID for Target Video'
+        default: '13AL8R54GE-S41TsIbXGX1rhIa-Y0HZm-'
+        required: true
+      folder_id:
+        description: 'Google Drive Folder ID for Dubbed Voices'
+        default: '1SE3JYbB4c-pC1W-ymRK6S5CsFt-XidzA'
+        required: true
+
+jobs:
+  dub_process:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Enable Virtual Swap (8GB)
+        run: |
+          sudo swapoff -a
+          sudo rm -f /swapfile
+          sudo fallocate -l 8G /swapfile
+          sudo chmod 600 /swapfile
+          sudo mkswap /swapfile
+          sudo swapon /swapfile
+
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Install System Audio/Video Packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg libsndfile1
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+          cache: 'pip'
+
+      - name: Install Python Dependencies
+        run: |
+          pip install gdown torch --index-url https://download.pytorch.org/whl/cpu
+          pip install faster-whisper demucs librosa soundfile
+
+      - name: Download Video and Audio Assets
+        run: |
+          mkdir -p workspace/inputs/dubbed_voices workspace/output workspace/stems
+          gdown --id "${{ github.event.inputs.video_id }}" -O workspace/inputs/target_video.mkv
+          gdown --folder "https://drive.google.com/drive/folders/${{ github.event.inputs.folder_id }}" -O workspace/inputs/dubbed_voices/
+
+      - name: Extract & Separate Audio (Demucs Low-RAM)
+        run: |
+          ffmpeg -y -i workspace/inputs/target_video.mkv -vn -ar 16000 -ac 1 workspace/inputs/mono_dialogue.wav
+          demucs --two-stems=vocals -n htdemucs -d cpu --segment 10 -o workspace/stems workspace/inputs/mono_dialogue.wav
+
+      - name: Align Premade Dubbing and Mix
+        run: |
+          python scripts/2_align_premade_dubbing.py
+          ffmpeg -y -i workspace/inputs/target_video.mkv -i workspace/final_audio.wav -map 0:v:0 -map 1:a:0 -c:v copy -c:a aac -b:a 192k "workspace/output/الحلقة_الجديدة.mp4"
+
+      - name: Upload Dubbed Episode Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Dubbed-Episode-Artifact
+          path: "workspace/output/الحلقة_الجديدة.mp4"
+          retention-days: 2
