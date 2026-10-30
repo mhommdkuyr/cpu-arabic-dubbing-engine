@@ -10,15 +10,19 @@ on:
       folder_id:
         description: 'Google Drive Folder ID for Dubbed Voices'
         default: '1SE3JYbB4c-pC1W-ymRK6S5CsFt-XidzA'
-        required: true
+        required: false
+
+permissions:
+  contents: write
 
 jobs:
   dub_process:
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     steps:
       - name: Enable Virtual Swap (8GB)
         run: |
-          sudo swapoff -a
+          sudo swapoff -a || true
           sudo rm -f /swapfile
           sudo fallocate -l 8G /swapfile
           sudo chmod 600 /swapfile
@@ -39,26 +43,45 @@ jobs:
           python-version: '3.10'
           cache: 'pip'
 
-      - name: Install Python Dependencies
+      - name: Install Python Dependencies (Conflict-Free)
         run: |
-          pip install gdown torch --index-url https://download.pytorch.org/whl/cpu
-          pip install faster-whisper demucs librosa soundfile
+          python -m pip install --upgrade pip
+          pip install gdown soundfile numpy scipy
 
-      - name: Download Video and Audio Assets
+      - name: Download Video and 10 Character Audio Assets
         run: |
-          mkdir -p workspace/inputs/dubbed_voices workspace/output workspace/stems
-          gdown --id "${{ github.event.inputs.video_id }}" -O workspace/inputs/target_video.mkv
-          gdown --folder "https://drive.google.com/drive/folders/${{ github.event.inputs.folder_id }}" -O workspace/inputs/dubbed_voices/
+          mkdir -p workspace/inputs/dubbed_voices workspace/output
+          python scripts/download_drive.py --file-id "${{ github.event.inputs.video_id || '13AL8R54GE-S41TsIbXGX1rhIa-Y0HZm-' }}" --output workspace/inputs/target_video.mkv
+          python scripts/download_drive.py --file-id "1mrtadf_yTJtk9vv2OIEqCSyhi-O_VJjA" --output workspace/inputs/dubbed_voices/01_لي_يانغ_Leda.wav
+          python scripts/download_drive.py --file-id "1n-E4VaPurnlbvaT5V_5taMXNHaGC8Ipl" --output workspace/inputs/dubbed_voices/02_لو_مينغ_Achird.wav
+          python scripts/download_drive.py --file-id "10cFLVZkb79xhYlBIYatBn_6s2hOjc4Os" --output workspace/inputs/dubbed_voices/03_تشوانغ_شيان_يوي_Kore.wav
+          python scripts/download_drive.py --file-id "1ZGttKXDYt6lzCtcCYU_2qr84ZgPXHDJq" --output workspace/inputs/dubbed_voices/04_فو_شاوتشينغ_Puck.wav
+          python scripts/download_drive.py --file-id "11HSnZ57lpUBlvztteIXF58FLydtJOD_J" --output workspace/inputs/dubbed_voices/05_شيا_مو_يان_Zephyr.wav
+          python scripts/download_drive.py --file-id "1kW388RgJNpoVCFEE8HRU18x4sX250bBf" --output workspace/inputs/dubbed_voices/الأصوات_العربية_المتبقية_06-10.zip
 
-      - name: Extract & Separate Audio (Demucs Low-RAM)
-        run: |
-          ffmpeg -y -i workspace/inputs/target_video.mkv -vn -ar 16000 -ac 1 workspace/inputs/mono_dialogue.wav
-          demucs --two-stems=vocals -n htdemucs -d cpu --segment 10 -o workspace/stems workspace/inputs/mono_dialogue.wav
-
-      - name: Align Premade Dubbing and Mix
+      - name: Align Premade Dubbing and Mix Audio
         run: |
           python scripts/2_align_premade_dubbing.py
-          ffmpeg -y -i workspace/inputs/target_video.mkv -i workspace/final_audio.wav -map 0:v:0 -map 1:a:0 -c:v copy -c:a aac -b:a 192k "workspace/output/الحلقة_الجديدة.mp4"
+
+      - name: Mux Final Dubbed Video (Zero-Copy Video Stream)
+        run: |
+          ffmpeg -nostdin -y -hide_banner -loglevel error \
+            -i workspace/inputs/target_video.mkv -i workspace/final_audio.wav \
+            -map 0:v:0 -map 1:a:0 -c:v copy -c:a aac -b:a 192k -movflags +faststart \
+            "workspace/output/dubbed_episode.mp4"
+          cp "workspace/output/dubbed_episode.mp4" "workspace/output/الحلقة_الجديدة.mp4"
+          ls -lh workspace/output/
+
+      - name: Publish Release Asset for Direct Cloud Transfer
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: episode-v1.0
+          name: "الحلقة الجديدة مدبلجة بالعربية"
+          files: |
+            workspace/output/dubbed_episode.mp4
+            workspace/output/الحلقة_الجديدة.mp4
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Upload Dubbed Episode Artifact
         uses: actions/upload-artifact@v4
